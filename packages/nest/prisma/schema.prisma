@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model UploadSession {
+  id                String       @id @default(uuid())
+  ownerId           String
+  bucket            String
+  objectKey         String
+  fileName          String
+  fileSize          BigInt
+  contentType       String
+  lastModified      BigInt
+  chunkSize         Int
+  status            UploadStatus @default(initiated)
+  multipartUploadId String
+  expiresAt         DateTime
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  completedAt       DateTime?
+
+  parts UploadPart[]
+
+  @@index([ownerId])
+  @@index([status])
+}
+
+model UploadPart {
+  id         String   @id @default(uuid())
+  sessionId  String
+  partNumber Int
+  etag       String
+  size       Int?
+  createdAt  DateTime @default(now())
+
+  session UploadSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, partNumber])
+}
+
+enum UploadStatus {
+  initiated
+  uploading
+  completed
+  aborted
+  expired
+  error
+}
