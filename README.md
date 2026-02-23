@@ -44,6 +44,64 @@ No fluxo adotado, o backend não recebe os bytes do arquivo. O frontend envia di
 4. `commit`: frontend informa ao backend as partes confirmadas (partNumber + ETag).
 5. `complete`: backend finaliza o multipart no storage.
 
+### 2.5 Separação Control Plane vs Data Plane
+- Control Plane (backend Nest):
+  - gerencia identidade, autorização, criação de sessão de upload e emissão de URLs pré-assinadas;
+  - controla estado do upload (`init`, `sign`, `commit`, `complete`, `abort`) e metadados de rastreabilidade;
+  - aplica regras de ownership (por exemplo, `ownerId`) para restringir operações por identidade.
+- Data Plane (frontend + storage):
+  - frontend envia bytes diretamente ao storage S3-compatible por `PUT` em URL pré-assinada;
+  - transferência binária não atravessa o backend;
+  - backend não manipula payload binário de arquivos.
+
+### 2.6 Segurança e Governança
+- Credenciais de storage não são expostas ao cliente; apenas URLs pré-assinadas temporárias são entregues ao frontend.
+- URLs pré-assinadas têm expiração curta, reduzindo janela de uso indevido.
+- O controle por identidade (`ownerId`) permite limitar sessão e consulta de upload por titular autorizado.
+- O modelo favorece trilha de auditoria de eventos de upload (início, partes confirmadas, conclusão e aborto).
+- A arquitetura é compatível com execução em ambientes isolados, com políticas de rede restritivas e segregação de responsabilidades.
+
+## Uso em ambientes Trusted Research Environment (TRE)
+
+### Definição técnica de TRE
+Trusted Research Environment (TRE) é um ambiente computacional controlado para processamento de dados sensíveis, com requisitos de isolamento, governança de acesso, rastreabilidade e conformidade regulatória.
+
+Em um TRE, a política de segurança normalmente exige:
+- segregação entre componentes de controle e transferência de dados;
+- identidade forte e autorização contextual;
+- auditoria completa de operações;
+- minimização da exposição de credenciais e superfície de ataque.
+
+### Aderência arquitetural do Flux Upload ao modelo TRE
+O Flux Upload foi concebido com separação explícita entre Control Plane e Data Plane, alinhada ao padrão operacional de TRE:
+- o backend atua como plano de controle, autorizando e orquestrando uploads;
+- o upload dos bytes ocorre diretamente para o storage isolado via URL pré-assinada;
+- credenciais permanentes do storage permanecem restritas ao backend e à infraestrutura.
+
+Esse desenho reduz acoplamento, simplifica inspeção de segurança e facilita evolução para cenários institucionais com políticas rígidas de governança.
+
+### Vantagens do uso de presigned URLs em ambiente controlado
+- Delegação mínima de permissão: o cliente recebe somente autorização temporária e escopada por objeto/parte.
+- Redução de risco operacional: não há necessidade de distribuir chave de acesso S3 para aplicações cliente.
+- Escalabilidade de transferência: tráfego de dados vai direto ao storage, preservando backend para regras de negócio e controle.
+- Melhor controle de expiração e revogação operacional de sessões.
+
+### Integrações institucionais suportadas pelo modelo
+O desenho atual é compatível com evolução para:
+- federação de identidade com Keycloak/OIDC;
+- autorização baseada em identidade, escopo e contexto do estudo/projeto;
+- auditoria de uploads por usuário, sessão, objeto e timestamp;
+- encaminhamento de eventos para trilhas de log imutáveis (WORM/SIEM);
+- criptografia no storage (server-side e, quando necessário, client-side).
+
+### Adequação para dados científicos sensíveis
+Para cenários de pesquisa com dados de saúde, genômica, dados administrativos ou outras categorias sensíveis, a arquitetura do Flux Upload contribui para:
+- aderência a princípios de minimização e segregação de acesso;
+- maior rastreabilidade para governança e compliance;
+- compatibilidade com requisitos de LGPD, políticas institucionais e comitês de governança de dados.
+
+Embora o repositório atual ofereça um baseline técnico, a adoção em produção TRE deve complementar controles de IAM, criptografia, observabilidade, política de retenção e processos de auditoria institucional.
+
 ## 3. Pré-requisitos
 - Node.js: recomendado `>= 20.11.0` (LTS).
 - pnpm: recomendado `>= 9`.
