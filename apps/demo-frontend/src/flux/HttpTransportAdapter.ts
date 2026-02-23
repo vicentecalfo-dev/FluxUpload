@@ -4,6 +4,7 @@ import type {
   TransportAdapter,
   UploadedPart,
 } from '@flux-upload/core';
+import { FluxUploadError, UploadSessionExpiredError } from '@flux-upload/core';
 
 interface BackendInitResponse {
   uploadId: string;
@@ -67,6 +68,12 @@ export class HttpTransportAdapter implements TransportAdapter {
       },
     );
 
+    if (response.status === 'expired') {
+      throw new UploadSessionExpiredError(
+        `Upload session '${input.uploadId}' is expired.`,
+      );
+    }
+
     return response.uploadedParts ?? [];
   };
 
@@ -103,10 +110,15 @@ export class HttpTransportAdapter implements TransportAdapter {
     const partData = await input.getPartData();
     const body = toFetchBody(partData);
 
-    const response = await fetch(input.url, {
-      method: 'PUT',
-      body,
-    });
+    let response: Response;
+    try {
+      response = await fetch(input.url, {
+        method: 'PUT',
+        body,
+      });
+    } catch (error) {
+      throw normalizeNetworkError(error, `Presigned PUT failed for part ${input.partNumber}.`);
+    }
 
     if (!response.ok) {
       const bodyText = await response.text();
@@ -184,22 +196,34 @@ export class HttpTransportAdapter implements TransportAdapter {
     const baseUrl = this.options.apiBaseUrl.replace(/\/+$/, '');
     const url = `${baseUrl}${path}`;
 
-    const response = await fetch(url, {
-      method: options.method,
-      headers: {
-        Authorization: `Bearer ${this.options.authToken}`,
-        ...(options.body
-          ? {
-              'Content-Type': 'application/json',
-            }
-          : {}),
-      },
-      body: options.body,
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: options.method,
+        headers: {
+          Authorization: `Bearer ${this.options.authToken}`,
+          ...(options.body
+            ? {
+                'Content-Type': 'application/json',
+              }
+            : {}),
+        },
+        body: options.body,
+      });
+    } catch (error) {
+      throw normalizeNetworkError(error, `Backend request failed (${options.method} ${path}).`);
+    }
 
     const acceptedStatus = [200, 201, 204];
     if (!acceptedStatus.includes(response.status)) {
       const text = await response.text();
+
+      if (response.status === 410) {
+        throw new UploadSessionExpiredError(
+          text || `Upload session expired for request ${options.method} ${path}.`,
+        );
+      }
+
       throw new Error(
         `Backend request failed (${options.method} ${path}): ${response.status} ${response.statusText} ${text}`,
       );
@@ -243,4 +267,24 @@ function requireEtags(parts: UploadedPart[]): Array<{ partNumber: number; etag: 
       etag: part.etag,
     };
   });
+}
+
+function normalizeNetworkError(error: unknown, message: string): unknown {
+  if (!isOfflineEnvironment()) {
+    return error;
+  }
+
+  return new FluxUploadError(message, {
+    code: 'OFFLINE',
+    fatal: false,
+    cause: error,
+  });
+}
+
+function isOfflineEnvironment(): boolean {
+  if (typeof navigator === 'undefined') {
+    return false;
+  }
+
+  return navigator.onLine === false;
 }

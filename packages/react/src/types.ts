@@ -35,6 +35,7 @@ export interface CreateUploadFromFileOptions extends CreateUploadOverrides {
 
 export interface UploadRuntimeState {
   isBound: boolean;
+  needsReconnect: boolean;
 }
 
 export type UploadState = CoreUploadState & {
@@ -72,6 +73,8 @@ export interface FluxUploadContextValue {
 interface FluxUploadProviderBaseProps {
   children: ReactNode;
   store?: FluxUploadStore;
+  autoPauseOnOffline?: boolean;
+  autoResumeOnReconnect?: boolean;
 }
 
 export interface FluxUploadProviderWithManagerProps extends FluxUploadProviderBaseProps {

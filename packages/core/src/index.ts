@@ -5,6 +5,7 @@ export type {
   PartSpec,
   UploadProgress,
   UploadErrorInfo,
+  PauseUploadOptions,
   PartData,
   PartDataProvider,
   UploadTaskOptions,
@@ -31,5 +32,7 @@ export {
   MissingPartDataProviderError,
   InvalidUploadStateError,
   PersistenceError,
+  UploadSessionExpiredError,
   isAbortError,
+  isUploadSessionExpiredError,
 } from './errors.js';

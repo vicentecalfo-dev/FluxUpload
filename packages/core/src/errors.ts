@@ -58,12 +58,44 @@ export class PersistenceError extends FluxUploadError {
   }
 }
 
+export class UploadSessionExpiredError extends FluxUploadError {
+  public constructor(message = 'Upload session expired', options: FluxUploadErrorOptions = {}) {
+    super(message, {
+      ...options,
+      code: options.code ?? 'UPLOAD_SESSION_EXPIRED',
+      fatal: options.fatal ?? true,
+    });
+    this.name = 'UploadSessionExpiredError';
+  }
+}
+
 export function isAbortError(error: unknown): error is AbortError {
   if (error instanceof AbortError) {
     return true;
   }
 
   if (error instanceof Error && error.name === 'AbortError') {
+    return true;
+  }
+
+  return false;
+}
+
+export function isUploadSessionExpiredError(error: unknown): error is UploadSessionExpiredError {
+  if (error instanceof UploadSessionExpiredError) {
+    return true;
+  }
+
+  if (error instanceof FluxUploadError && error.code === 'UPLOAD_SESSION_EXPIRED') {
+    return true;
+  }
+
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: string }).code === 'UPLOAD_SESSION_EXPIRED'
+  ) {
     return true;
   }
 

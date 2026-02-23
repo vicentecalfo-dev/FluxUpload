@@ -7,12 +7,11 @@ export type UploadUiStatus =
   | 'error'
   | 'completed'
   | 'canceled'
+  | 'expired'
   | 'needs-reconnect';
 
 export function getUploadUiStatus(upload: UploadState): UploadUiStatus {
-  const isBound = upload.runtime?.isBound ?? false;
-
-  if (!isBound && (upload.status === 'idle' || upload.status === 'paused' || upload.status === 'error')) {
+  if (upload.runtime?.needsReconnect) {
     return 'needs-reconnect';
   }
 
@@ -29,6 +28,8 @@ export function getUploadUiStatus(upload: UploadState): UploadUiStatus {
       return 'completed';
     case 'canceled':
       return 'canceled';
+    case 'expired':
+      return 'expired';
     default:
       return 'queued';
   }
@@ -70,7 +71,7 @@ export function canPause(upload: UploadState): boolean {
 }
 
 export function canCancel(upload: UploadState): boolean {
-  return upload.status !== 'completed' && upload.status !== 'canceled';
+  return upload.status !== 'completed' && upload.status !== 'canceled' && upload.status !== 'expired';
 }
 
 export function canResume(upload: UploadState): boolean {
@@ -94,6 +95,8 @@ export function getBadgeVariant(status: UploadUiStatus):
     case 'error':
     case 'canceled':
       return 'danger';
+    case 'expired':
+      return 'outline';
     case 'needs-reconnect':
       return 'warning';
     case 'uploading':

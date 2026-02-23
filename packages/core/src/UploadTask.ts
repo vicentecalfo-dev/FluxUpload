@@ -6,12 +6,14 @@ import {
   MissingPartDataProviderError,
   PersistenceError,
   isAbortError,
+  isUploadSessionExpiredError,
   toUploadErrorInfo,
 } from './errors.js';
 import { retry } from './retryPolicy.js';
 import {
   cloneUploadState,
   normalizePartNumbers,
+  type PauseUploadOptions,
   type PartDataProvider,
   type PartSpec,
   type UploadProgress,
@@ -33,6 +35,7 @@ export class UploadTask {
   private runController: AbortController | null = null;
   private pauseRequested = false;
   private cancelRequested = false;
+  private pauseOptions?: PauseUploadOptions;
 
   private state: UploadState;
 
@@ -69,7 +72,11 @@ export class UploadTask {
   }
 
   public async start(): Promise<void> {
-    if (this.state.status === 'completed' || this.state.status === 'canceled') {
+    if (
+      this.state.status === 'completed' ||
+      this.state.status === 'canceled' ||
+      this.state.status === 'expired'
+    ) {
       return;
     }
 
@@ -83,6 +90,7 @@ export class UploadTask {
 
     this.pauseRequested = false;
     this.cancelRequested = false;
+    this.pauseOptions = undefined;
 
     this.runPromise = this.runInternal();
 
@@ -93,16 +101,21 @@ export class UploadTask {
     }
   }
 
-  public async pause(): Promise<void> {
-    if (this.state.status === 'completed' || this.state.status === 'canceled') {
+  public async pause(options: PauseUploadOptions = {}): Promise<void> {
+    if (
+      this.state.status === 'completed' ||
+      this.state.status === 'canceled' ||
+      this.state.status === 'expired'
+    ) {
       return;
     }
 
     this.pauseRequested = true;
+    this.pauseOptions = options;
     this.runController?.abort();
 
     if (!this.runPromise) {
-      await this.updateStatus('paused', 'Upload paused');
+      await this.applyPauseState();
       return;
     }
 
@@ -113,8 +126,48 @@ export class UploadTask {
     await this.start();
   }
 
+  public async reconcileWithRemote(): Promise<void> {
+    if (!this.state.uploadId) {
+      return;
+    }
+
+    if (
+      this.state.status === 'completed' ||
+      this.state.status === 'canceled' ||
+      this.state.status === 'expired'
+    ) {
+      return;
+    }
+
+    try {
+      const remoteUploadedParts = await retry(
+        () => this.options.transportAdapter.getUploadedParts({ uploadId: this.state.uploadId as string }),
+        this.retryOptions,
+      );
+
+      this.reconcileUploadedParts(remoteUploadedParts);
+      await this.persist();
+      this.emitProgress();
+    } catch (error) {
+      if (isUploadSessionExpiredError(error)) {
+        this.state.lastError = toUploadErrorInfo(error);
+        await this.updateStatus('expired', this.state.lastError.message);
+        this.emitter.emit('error', { localId: this.state.localId, error });
+        return;
+      }
+
+      this.state.lastError = toUploadErrorInfo(error);
+      await this.persist();
+      this.emitter.emit('error', { localId: this.state.localId, error });
+    }
+  }
+
   public async cancel(): Promise<void> {
-    if (this.state.status === 'completed' || this.state.status === 'canceled') {
+    if (
+      this.state.status === 'completed' ||
+      this.state.status === 'canceled' ||
+      this.state.status === 'expired'
+    ) {
       return;
     }
 
@@ -160,16 +213,15 @@ export class UploadTask {
         throw new InvalidUploadStateError('uploadId is required after initUpload.');
       }
 
-      const remoteUploadedParts = await this.withRetry(
-        () => this.options.transportAdapter.getUploadedParts({ uploadId }),
-        signal,
-      );
-      this.reconcileUploadedParts(remoteUploadedParts);
-      await this.persist();
-      this.emitProgress();
+      await this.reconcileWithRemote();
+      if (this.state.status === 'expired') {
+        return;
+      }
 
       const pendingParts = this.parts.filter(
-        (part) => !this.state.uploadedParts.includes(part.partNumber),
+        (part) =>
+          !this.state.uploadedParts.includes(part.partNumber) ||
+          !this.state.partEtags?.[part.partNumber],
       );
 
       if (pendingParts.length > 0) {
@@ -179,16 +231,15 @@ export class UploadTask {
       this.throwIfAborted(signal);
 
       const completedParts = this.getCompletedParts();
-      const commitParts = this.options.transportAdapter.commitParts;
-      if (commitParts) {
-        await this.withRetry(
-          () => commitParts({ uploadId, parts: completedParts }),
-          signal,
-        );
-      }
+      const canSendInlineParts = completedParts.every((part) => Boolean(part.etag));
 
       await this.withRetry(
-        () => this.options.transportAdapter.completeUpload({ uploadId, parts: completedParts }),
+        () =>
+          this.options.transportAdapter.completeUpload(
+            canSendInlineParts
+              ? { uploadId, parts: completedParts }
+              : { uploadId },
+          ),
         signal,
       );
 
@@ -203,12 +254,28 @@ export class UploadTask {
       }
 
       if (isAbortError(error) && this.pauseRequested) {
-        await this.updateStatus('paused', 'Upload paused');
+        await this.applyPauseState();
         return;
       }
 
       if (isAbortError(error)) {
-        await this.updateStatus('paused', 'Upload interrupted');
+        await this.applyPauseState({
+          message: 'Upload interrupted',
+        });
+        return;
+      }
+
+      if (isUploadSessionExpiredError(error)) {
+        this.state.lastError = toUploadErrorInfo(error);
+        await this.updateStatus('expired', this.state.lastError.message);
+        this.emitter.emit('error', { localId: this.state.localId, error });
+        return;
+      }
+
+      if (isOfflineError(error)) {
+        this.state.lastError = toUploadErrorInfo(error);
+        await this.updateStatus('paused', this.state.lastError.message);
+        this.emitter.emit('error', { localId: this.state.localId, error });
         return;
       }
 
@@ -280,6 +347,23 @@ export class UploadTask {
       });
     }, signal);
 
+    const commitParts = this.options.transportAdapter.commitParts;
+    if (commitParts && uploadResult.etag) {
+      await this.withRetry(
+        () =>
+          commitParts({
+            uploadId,
+            parts: [
+              {
+                partNumber: part.partNumber,
+                etag: uploadResult.etag,
+              },
+            ],
+          }),
+        signal,
+      );
+    }
+
     const currentParts = new Set(this.state.uploadedParts);
     currentParts.add(part.partNumber);
     this.state.uploadedParts = normalizePartNumbers([...currentParts], this.state.totalParts);
@@ -289,9 +373,11 @@ export class UploadTask {
     }
 
     this.state.partEtags[part.partNumber] = uploadResult.etag;
-    this.state.bytesConfirmed = Math.min(
+    this.state.bytesConfirmed = calculateConfirmedBytes(
+      this.state.uploadedParts,
+      this.parts,
       this.state.fileMeta.size,
-      this.state.uploadedParts.length * this.state.chunkSize,
+      this.state.chunkSize,
     );
     this.state.lastError = undefined;
 
@@ -305,9 +391,11 @@ export class UploadTask {
       this.state.totalParts,
     );
     this.state.uploadedParts = mergedParts;
-    this.state.bytesConfirmed = Math.min(
+    this.state.bytesConfirmed = calculateConfirmedBytes(
+      this.state.uploadedParts,
+      this.parts,
       this.state.fileMeta.size,
-      this.state.uploadedParts.length * this.state.chunkSize,
+      this.state.chunkSize,
     );
   }
 
@@ -334,7 +422,12 @@ export class UploadTask {
       totalParts,
       uploadedParts,
       partEtags: baseState?.partEtags ? { ...baseState.partEtags } : {},
-      bytesConfirmed: Math.min(options.fileMeta.size, uploadedParts.length * options.chunkSize),
+      bytesConfirmed: calculateConfirmedBytes(
+        uploadedParts,
+        this.parts,
+        options.fileMeta.size,
+        options.chunkSize,
+      ),
       createdAt: baseState?.createdAt ?? now,
       updatedAt: baseState?.updatedAt ?? now,
       lastError: baseState?.lastError ? { ...baseState.lastError } : undefined,
@@ -410,4 +503,42 @@ export class UploadTask {
       });
     }
   }
+
+  private async applyPauseState(options?: PauseUploadOptions): Promise<void> {
+    const mergedOptions = options ?? this.pauseOptions;
+    const message = mergedOptions?.message ?? 'Upload paused';
+
+    if (mergedOptions?.lastError) {
+      this.state.lastError = { ...mergedOptions.lastError };
+    }
+
+    await this.updateStatus('paused', message);
+    this.pauseOptions = undefined;
+  }
+}
+
+function calculateConfirmedBytes(
+  uploadedParts: number[],
+  parts: PartSpec[],
+  fileSize: number,
+  chunkSize: number,
+): number {
+  let total = 0;
+
+  for (const partNumber of uploadedParts) {
+    const plannedPart = parts[partNumber - 1];
+    if (plannedPart) {
+      total += plannedPart.endByteExclusive - plannedPart.startByte;
+      continue;
+    }
+
+    total += chunkSize;
+  }
+
+  return Math.min(fileSize, total);
+}
+
+function isOfflineError(error: unknown): boolean {
+  const info = toUploadErrorInfo(error);
+  return info.code === 'OFFLINE';
 }

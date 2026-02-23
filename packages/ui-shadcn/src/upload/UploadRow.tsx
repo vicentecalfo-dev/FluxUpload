@@ -29,15 +29,19 @@ export function UploadRow({ upload, actions, labels, onFileMismatch }: UploadRow
       case 'uploading':
         return labels.uploading;
       case 'paused':
-        return labels.paused;
+        return upload.lastError?.code === 'PAGE_UNLOAD' ? `${labels.paused} / Interrompido` : labels.paused;
       case 'error':
         return labels.error;
       case 'completed':
         return labels.completed;
       case 'canceled':
         return labels.canceled;
+      case 'expired':
+        return labels.expired;
       case 'needs-reconnect':
-        return labels.needsReconnect;
+        return upload.lastError?.code === 'PAGE_UNLOAD'
+          ? `${labels.needsReconnect} / Interrompido`
+          : labels.needsReconnect;
       default:
         return labels.queued;
     }
@@ -60,11 +64,25 @@ export function UploadRow({ upload, actions, labels, onFileMismatch }: UploadRow
         <p className="text-xs text-slate-500 dark:text-slate-400">
           {labels.progressLabel}: {Math.round(progressPct)}%
         </p>
+        {uiStatus === 'expired' ? (
+          <p className="text-xs text-amber-700 dark:text-amber-400">{labels.expiredHint}</p>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap gap-2">
         {canResume(upload) ? (
-          <Button size="sm" variant="secondary" onClick={() => void actions.resume(upload.localId)}>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              if (uiStatus === 'needs-reconnect') {
+                setIsReconnectDialogOpen(true);
+                return;
+              }
+
+              void actions.resume(upload.localId);
+            }}
+          >
             <Play className="mr-1.5 h-3.5 w-3.5" />
             {labels.resume}
           </Button>

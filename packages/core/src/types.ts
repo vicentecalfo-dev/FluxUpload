@@ -2,7 +2,14 @@ import type { PersistenceAdapter } from './persistence/PersistenceAdapter.js';
 import type { TransportAdapter } from './transport/TransportAdapter.js';
 import type { RetryOptions } from './retryPolicy.js';
 
-export type UploadStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error' | 'canceled';
+export type UploadStatus =
+  | 'idle'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'error'
+  | 'canceled'
+  | 'expired';
 
 export interface FileMeta {
   name: string;
@@ -30,6 +37,11 @@ export interface UploadErrorInfo {
   message: string;
   code?: string;
   fatal?: boolean;
+}
+
+export interface PauseUploadOptions {
+  message?: string;
+  lastError?: UploadErrorInfo;
 }
 
 export interface UploadState {

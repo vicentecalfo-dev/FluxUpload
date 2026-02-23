@@ -5,6 +5,7 @@ import { UploadNotFoundError } from './errors.js';
 import type {
   CreateUploadOverrides,
   FileMeta,
+  PauseUploadOptions,
   PartDataProvider,
   UploadManagerOptions,
   UploadState,
@@ -84,9 +85,9 @@ export class UploadManager {
     await task.start();
   }
 
-  public async pause(localId: string): Promise<void> {
+  public async pause(localId: string, options?: PauseUploadOptions): Promise<void> {
     const task = await this.ensureTask(localId);
-    await task.pause();
+    await task.pause(options);
   }
 
   public async resume(localId: string): Promise<void> {
@@ -100,6 +101,33 @@ export class UploadManager {
   }
 
   public async listStates(): Promise<UploadState[]> {
+    return this.persistenceAdapter.list();
+  }
+
+  public async reconcile(localId: string): Promise<UploadState> {
+    const task = await this.ensureTask(localId);
+    await task.reconcileWithRemote();
+    return task.getState();
+  }
+
+  public async rehydratePersistedUploads(options?: {
+    pauseRunningOnBoot?: boolean;
+    pauseOptions?: PauseUploadOptions;
+  }): Promise<UploadState[]> {
+    const pauseRunningOnBoot = options?.pauseRunningOnBoot ?? true;
+    const states = await this.restorePersistedUploads();
+
+    for (const state of states) {
+      const task = await this.ensureTask(state.localId);
+      const current = task.getState();
+
+      if (pauseRunningOnBoot && current.status === 'running') {
+        await task.pause(options?.pauseOptions);
+      }
+
+      await task.reconcileWithRemote();
+    }
+
     return this.persistenceAdapter.list();
   }
 

@@ -5,6 +5,7 @@ import {
   type UploadState as CoreUploadState,
   type FileMeta,
   type PartDataProvider,
+  type UploadErrorInfo,
 } from '@flux-upload/core';
 import {
   createContext,
@@ -28,15 +29,29 @@ import {
 
 const FluxUploadContext = createContext<FluxUploadContextValue | null>(null);
 
+const OFFLINE_ERROR_INFO: UploadErrorInfo = {
+  name: 'OfflineError',
+  code: 'OFFLINE',
+  fatal: false,
+  message: 'Conexao indisponivel. Upload pausado automaticamente.',
+};
+
+const PAGE_UNLOAD_ERROR_INFO: UploadErrorInfo = {
+  name: 'PageUnloadError',
+  code: 'PAGE_UNLOAD',
+  fatal: false,
+  message: 'Upload interrompido por recarregamento da pagina.',
+};
+
 export function FluxUploadProvider(props: FluxUploadProviderProps): ReactElement {
   const managerRef = useRef<UploadManager>();
   if (!managerRef.current) {
     managerRef.current = resolveManager(props);
   }
   const storeRef = useRef(props.store ?? createFluxUploadStore());
-  const boundLocalIdsRef = useRef(new Set<string>());
   const pendingBindsRef = useRef(new Map<string, Promise<void>>());
   const latestRefreshRequestRef = useRef(0);
+  const bootstrappedRef = useRef(false);
 
   const manager = managerRef.current;
   const store = storeRef.current;
@@ -53,7 +68,7 @@ export function FluxUploadProvider(props: FluxUploadProviderProps): ReactElement
     store.setMany(
       states.map((state) =>
         withRuntimeState(state, {
-          isBound: boundLocalIdsRef.current.has(state.localId),
+          isBound: manager.hasPartDataProvider(state.localId),
         }),
       ),
     );
@@ -77,17 +92,16 @@ export function FluxUploadProvider(props: FluxUploadProviderProps): ReactElement
         ...state,
         runtime: {
           isBound: true,
+          needsReconnect: false,
         },
       });
 
       const bindPromise = manager
         .bindPartDataProvider(localId, createPartDataProvider(file))
         .then(async () => {
-          boundLocalIdsRef.current.add(localId);
           await refreshFromPersistence();
         })
         .catch(async () => {
-          boundLocalIdsRef.current.delete(localId);
           await refreshFromPersistence();
         })
         .finally(() => {
@@ -99,6 +113,84 @@ export function FluxUploadProvider(props: FluxUploadProviderProps): ReactElement
     },
     [manager, store, refreshFromPersistence],
   );
+
+  const pauseRunningForOffline = useCallback(async (): Promise<void> => {
+    const states = await manager.listStates();
+    const snapshot = store.getSnapshot();
+    const runningIds = new Set<string>();
+
+    for (const state of states) {
+      if (state.status === 'running') {
+        runningIds.add(state.localId);
+      }
+    }
+
+    for (const localId of snapshot.order) {
+      const upload = snapshot.uploadsById[localId];
+      if (upload?.status === 'running') {
+        runningIds.add(localId);
+      }
+    }
+
+    await Promise.allSettled(
+      [...runningIds].map((localId) =>
+        manager.pause(localId, {
+          message: OFFLINE_ERROR_INFO.message,
+          lastError: OFFLINE_ERROR_INFO,
+        }),
+      ),
+    );
+
+    await refreshFromPersistence();
+  }, [manager, refreshFromPersistence]);
+
+  const pauseRunningForPageUnload = useCallback(async (): Promise<void> => {
+    const states = await manager.listStates();
+    const snapshot = store.getSnapshot();
+    const runningIds = new Set<string>();
+
+    for (const state of states) {
+      if (state.status === 'running') {
+        runningIds.add(state.localId);
+      }
+    }
+
+    for (const localId of snapshot.order) {
+      const upload = snapshot.uploadsById[localId];
+      if (upload?.status === 'running') {
+        runningIds.add(localId);
+      }
+    }
+
+    await Promise.allSettled(
+      [...runningIds].map((localId) =>
+        manager.pause(localId, {
+          message: PAGE_UNLOAD_ERROR_INFO.message,
+          lastError: PAGE_UNLOAD_ERROR_INFO,
+        }),
+      ),
+    );
+
+    await refreshFromPersistence();
+  }, [manager, refreshFromPersistence, store]);
+
+  const resumePausedAfterReconnect = useCallback(async (): Promise<void> => {
+    await refreshFromPersistence();
+
+    const snapshot = store.getSnapshot();
+    const resumable = snapshot.order
+      .map((localId) => snapshot.uploadsById[localId])
+      .filter((upload): upload is UploadState => upload !== undefined)
+      .filter(
+        (upload) =>
+          upload.status === 'paused' &&
+          upload.runtime.isBound &&
+          upload.lastError?.code === OFFLINE_ERROR_INFO.code,
+      );
+
+    await Promise.allSettled(resumable.map((upload) => manager.resume(upload.localId)));
+    await refreshFromPersistence();
+  }, [manager, refreshFromPersistence, store]);
 
   const actions = useMemo<FluxUploadActions>(
     () => ({
@@ -112,7 +204,6 @@ export function FluxUploadProvider(props: FluxUploadProviderProps): ReactElement
           createPartDataProvider(file),
           overrides,
         );
-        boundLocalIdsRef.current.add(localId);
 
         await refreshFromPersistence();
 
@@ -161,6 +252,27 @@ export function FluxUploadProvider(props: FluxUploadProviderProps): ReactElement
   );
 
   useEffect(() => {
+    if (bootstrappedRef.current) {
+      return;
+    }
+
+    bootstrappedRef.current = true;
+
+    const bootstrap = async (): Promise<void> => {
+      await manager.rehydratePersistedUploads({
+        pauseRunningOnBoot: true,
+        pauseOptions: {
+          message: PAGE_UNLOAD_ERROR_INFO.message,
+          lastError: PAGE_UNLOAD_ERROR_INFO,
+        },
+      });
+      await refreshFromPersistence();
+    };
+
+    void bootstrap();
+  }, [manager, refreshFromPersistence]);
+
+  useEffect(() => {
     const queueRefresh = (): void => {
       void refreshFromPersistence();
     };
@@ -180,6 +292,68 @@ export function FluxUploadProvider(props: FluxUploadProviderProps): ReactElement
       }
     };
   }, [manager, refreshFromPersistence]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const autoPauseOnOffline = props.autoPauseOnOffline ?? true;
+    const autoResumeOnReconnect = props.autoResumeOnReconnect ?? false;
+
+    const handleOffline = (): void => {
+      if (!autoPauseOnOffline) {
+        return;
+      }
+
+      void pauseRunningForOffline();
+    };
+
+    const handleOnline = (): void => {
+      if (!autoResumeOnReconnect) {
+        void refreshFromPersistence();
+        return;
+      }
+
+      void resumePausedAfterReconnect();
+    };
+
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [
+    pauseRunningForOffline,
+    props.autoPauseOnOffline,
+    props.autoResumeOnReconnect,
+    refreshFromPersistence,
+    resumePausedAfterReconnect,
+  ]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const handleBeforeUnload = (): void => {
+      void pauseRunningForPageUnload();
+    };
+
+    const handlePageHide = (): void => {
+      void pauseRunningForPageUnload();
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [pauseRunningForPageUnload]);
 
   const contextValue = useMemo<FluxUploadContextValue>(
     () => ({
@@ -243,8 +417,19 @@ function withRuntimeState(
 ): UploadState {
   return {
     ...state,
-    runtime: runtimeState,
+    runtime: {
+      ...runtimeState,
+      needsReconnect: needsReconnect(state.status, runtimeState.isBound),
+    },
   };
+}
+
+function needsReconnect(status: CoreUploadState['status'], isBound: boolean): boolean {
+  if (isBound) {
+    return false;
+  }
+
+  return status === 'idle' || status === 'paused' || status === 'error';
 }
 
 function resolveManager(props: FluxUploadProviderProps): UploadManager {

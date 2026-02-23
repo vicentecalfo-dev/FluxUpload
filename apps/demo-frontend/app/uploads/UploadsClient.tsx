@@ -95,6 +95,8 @@ function UploadsView(): JSX.Element {
           error: 'Erro',
           completed: 'Concluido',
           canceled: 'Cancelado',
+          expired: 'Expirado',
+          expiredHint: 'Sessao expirada. Inicie um novo upload para continuar.',
           needsReconnect: 'Precisa reconectar',
           resume: 'Retomar',
           pause: 'Pausar',

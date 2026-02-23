@@ -16,6 +16,8 @@ const DEFAULT_LABELS: FluxUploadPanelLabels = {
   error: 'Error',
   completed: 'Completed',
   canceled: 'Canceled',
+  expired: 'Expired',
+  expiredHint: 'Upload session expired. Start a new upload session.',
   needsReconnect: 'Needs reconnect',
   resume: 'Resume',
   pause: 'Pause',

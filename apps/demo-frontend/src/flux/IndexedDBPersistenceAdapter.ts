@@ -1,7 +1,6 @@
 import type { PersistenceAdapter, UploadState } from '@flux-upload/core';
 
 const DATABASE_NAME = 'flux_upload_demo';
-const DATABASE_VERSION = 1;
 const STORE_UPLOADS = 'uploads';
 
 export class IndexedDBPersistenceAdapter implements PersistenceAdapter {
@@ -45,7 +44,10 @@ export class IndexedDBPersistenceAdapter implements PersistenceAdapter {
     }
 
     if (!this.dbPromise) {
-      this.dbPromise = openDatabase();
+      this.dbPromise = openDatabase().catch((error) => {
+        this.dbPromise = null;
+        throw error;
+      });
     }
 
     return this.dbPromise;
@@ -53,8 +55,40 @@ export class IndexedDBPersistenceAdapter implements PersistenceAdapter {
 }
 
 function openDatabase(): Promise<IDBDatabase> {
+  return openDatabaseWithStore();
+}
+
+async function openDatabaseWithStore(): Promise<IDBDatabase> {
+  const db = await openDatabaseAtVersion();
+
+  if (db.objectStoreNames.contains(STORE_UPLOADS)) {
+    db.onversionchange = () => {
+      db.close();
+    };
+    return db;
+  }
+
+  const nextVersion = db.version + 1;
+  db.close();
+
+  const migratedDb = await openDatabaseAtVersion(nextVersion);
+  if (!migratedDb.objectStoreNames.contains(STORE_UPLOADS)) {
+    migratedDb.close();
+    throw new Error(`IndexedDB store '${STORE_UPLOADS}' was not created after migration.`);
+  }
+
+  migratedDb.onversionchange = () => {
+    migratedDb.close();
+  };
+
+  return migratedDb;
+}
+
+function openDatabaseAtVersion(version?: number): Promise<IDBDatabase> {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+    const request = typeof version === 'number'
+      ? indexedDB.open(DATABASE_NAME, version)
+      : indexedDB.open(DATABASE_NAME);
 
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -71,6 +105,10 @@ function openDatabase(): Promise<IDBDatabase> {
 
     request.onerror = () => {
       reject(request.error ?? new Error('Failed to open IndexedDB database.'));
+    };
+
+    request.onblocked = () => {
+      reject(new Error('IndexedDB upgrade is blocked by another tab/window.'));
     };
   });
 }

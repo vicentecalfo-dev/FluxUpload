@@ -8,6 +8,8 @@ export interface FluxUploadPanelLabels {
   error: string;
   completed: string;
   canceled: string;
+  expired: string;
+  expiredHint: string;
   needsReconnect: string;
   resume: string;
   pause: string;
