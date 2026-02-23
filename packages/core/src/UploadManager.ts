@@ -71,6 +71,14 @@ export class UploadManager {
     this.partDataProviders.set(localId, partDataProvider);
   }
 
+  public async bindDataProvider(localId: string, partDataProvider: PartDataProvider): Promise<void> {
+    await this.bindPartDataProvider(localId, partDataProvider);
+  }
+
+  public hasPartDataProvider(localId: string): boolean {
+    return this.partDataProviders.has(localId);
+  }
+
   public async start(localId: string): Promise<void> {
     const task = await this.ensureTask(localId);
     await task.start();
