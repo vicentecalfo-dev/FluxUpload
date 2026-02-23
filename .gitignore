@@ -1,0 +1,9 @@
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+.eslintcache
+*.log
+.DS_Store
+.vscode/
+.idea/
