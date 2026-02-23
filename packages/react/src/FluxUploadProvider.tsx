@@ -36,12 +36,20 @@ export function FluxUploadProvider(props: FluxUploadProviderProps): ReactElement
   const storeRef = useRef(props.store ?? createFluxUploadStore());
   const boundLocalIdsRef = useRef(new Set<string>());
   const pendingBindsRef = useRef(new Map<string, Promise<void>>());
+  const latestRefreshRequestRef = useRef(0);
 
   const manager = managerRef.current;
   const store = storeRef.current;
 
   const refreshFromPersistence = useCallback(async (): Promise<void> => {
+    const requestId = latestRefreshRequestRef.current + 1;
+    latestRefreshRequestRef.current = requestId;
     const states = await manager.listStates();
+
+    if (requestId !== latestRefreshRequestRef.current) {
+      return;
+    }
+
     store.setMany(
       states.map((state) =>
         withRuntimeState(state, {
