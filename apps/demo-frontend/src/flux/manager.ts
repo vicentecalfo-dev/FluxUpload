@@ -35,7 +35,7 @@ export function getDemoUploadManager(): UploadManager {
       persistenceAdapter: new IndexedDBPersistenceAdapter(),
       // S3-compatible multipart requires >= 5 MiB for all parts except the last.
       // Using 5 MiB gives the most frequent confirmed-progress updates while staying valid.
-      defaultChunkSize: 1 * 1024 * 1024,
+      defaultChunkSize: 5 * 1024 * 1024,
       defaultConcurrency: 3,
       defaultRetry: {
         maxRetries: 3,

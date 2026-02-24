@@ -11,7 +11,7 @@ export const fluxUploadConfigValidationSchema = Joi.object({
   S3_ACCESS_KEY: Joi.string().required(),
   S3_SECRET_KEY: Joi.string().required(),
   S3_FORCE_PATH_STYLE: Joi.boolean().truthy('true').truthy('1').falsy('false').falsy('0').optional(),
-  UPLOAD_DEFAULT_CHUNK_SIZE: Joi.number().integer().positive().default(16_777_216),
+  UPLOAD_DEFAULT_CHUNK_SIZE: Joi.number().integer().min(5 * 1024 * 1024).default(16_777_216),
   UPLOAD_SESSION_TTL_HOURS: Joi.number().integer().positive().default(24),
   PRESIGN_EXPIRES_SECONDS: Joi.number().integer().positive().default(900),
   OBJECT_KEY_PREFIX: Joi.string().default('flux-upload'),

@@ -21,6 +21,7 @@ import { buildObjectKey } from './utils/object-key.js';
 import { sanitizeEtag } from './utils/sanitize.js';
 
 type SessionWithParts = UploadSession & { parts: UploadPart[] };
+const MIN_MULTIPART_CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
 
 export interface InitUploadResponse {
   uploadId: string;
@@ -73,6 +74,12 @@ export class FluxUploadService {
 
     if (chunkSize <= 0) {
       throw new BadRequestException('chunkSize must be a positive integer.');
+    }
+
+    if (chunkSize < MIN_MULTIPART_CHUNK_SIZE_BYTES) {
+      throw new BadRequestException(
+        `chunkSize must be at least ${MIN_MULTIPART_CHUNK_SIZE_BYTES} bytes (5 MiB) for S3-compatible multipart uploads.`,
+      );
     }
 
     const objectKey = buildObjectKey({
