@@ -17,9 +17,10 @@ export default function UploadsClient(): JSX.Element {
 }
 
 function UploadsView(): JSX.Element {
-  const { actions } = useFluxUpload();
+  const { actions, manager } = useFluxUpload();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [isClearingLocalState, setIsClearingLocalState] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -53,6 +54,41 @@ function UploadsView(): JSX.Element {
     }
   };
 
+  const handleClearLocalState = async (): Promise<void> => {
+    setIsClearingLocalState(true);
+    setErrorMessage(null);
+
+    try {
+      const persistedStates = await manager.persistenceAdapter.list();
+      const runningLocalIds = persistedStates
+        .filter((state) => state.status === 'running')
+        .map((state) => state.localId);
+
+      if (runningLocalIds.length > 0) {
+        await Promise.allSettled(runningLocalIds.map((localId) => manager.pause(localId)));
+      }
+
+      const removeResults = await Promise.allSettled(
+        persistedStates.map((state) => manager.persistenceAdapter.remove(state.localId)),
+      );
+      const removeFailures = removeResults.filter(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+
+      if (removeFailures.length > 0) {
+        throw new Error(
+          `Falha ao limpar estado local de ${removeFailures.length} upload(s).`,
+        );
+      }
+
+      await actions.refreshFromPersistence();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Falha ao limpar estado local.');
+    } finally {
+      setIsClearingLocalState(false);
+    }
+  };
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-6 py-10">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -63,7 +99,7 @@ function UploadsView(): JSX.Element {
           </p>
         </div>
 
-        <div>
+        <div className="flex flex-wrap items-center gap-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -73,8 +109,17 @@ function UploadsView(): JSX.Element {
               void handleFilesSelected(event);
             }}
           />
-          <Button onClick={handlePickFiles} disabled={isCreating}>
+          <Button onClick={handlePickFiles} disabled={isCreating || isClearingLocalState}>
             {isCreating ? 'Adicionando...' : 'Adicionar arquivos'}
+          </Button>
+          <Button
+            onClick={() => {
+              void handleClearLocalState();
+            }}
+            variant="outline"
+            disabled={isCreating || isClearingLocalState}
+          >
+            {isClearingLocalState ? 'Limpando...' : 'Limpar estado local'}
           </Button>
         </div>
       </header>
